@@ -27,6 +27,8 @@ from official.nlp.transformer import ffn_layer
 from official.nlp.transformer import metrics
 from official.nlp.transformer import model_utils
 from official.nlp.transformer.utils.tokenizer import EOS_ID
+from official.nlp.transformer.sched_sample.sched_sampler import ScheduledSampler
+
 
 # Disable the not-callable lint error, since it claims many objects are not
 # callable when they actually are.
@@ -88,6 +90,9 @@ class Transformer(tf.keras.Model):
     self.decoder_stack = DecoderStack(params)
     self.position_embedding = position_embedding.RelativePositionEmbedding(
         hidden_size=self.params["hidden_size"])
+    self.sched_sampler = None
+    if 'schedule_sampling' in params:
+      self.sched_sampler = ScheduledSampler(params['schedule_sampling'])
 
   def get_config(self):
     return {
@@ -146,6 +151,13 @@ class Transformer(tf.keras.Model):
         return self.predict(encoder_outputs, attention_bias, training)
       else:
         logits = self.decode(targets, encoder_outputs, attention_bias, training)
+        if training and self.sched_sampler is not None:
+          logits = tf.stop_gradient(logits)
+          logits = self.decode_sched_sample(targets,
+                                            logits,
+                                            encoder_outputs,
+                                            attention_bias)
+
         return logits
 
   def encode(self, inputs, attention_bias, training):
@@ -221,6 +233,49 @@ class Transformer(tf.keras.Model):
           decoder_self_attention_bias,
           attention_bias,
           training=training)
+      logits = self.embedding_softmax_layer(outputs, mode="linear")
+      logits = tf.cast(logits, tf.float32)
+      return logits
+
+  def decode_sched_sample(self,
+                          targets,
+                          logits,
+                          encoder_outputs,
+                          attention_bias):
+    with tf.name_scope("decode_sched_sample"):
+      # Prepare inputs to decoder layers via scheduled sampling from logits
+
+      # logits: [batch_size, target_sequence_length, vocab_size]
+      # target: [batch_size, target_sequence_length]
+
+      with tf.name_scope("shift_targets"):
+        # Shift targets to the right, and remove the last element
+        shift_targets = tf.pad(targets, [[0, 0], [1, 0]])[:, :-1]
+
+      decoder_input_sequence = self.sched_sampler(shift_targets, logits)
+
+      decoder_inputs = self.embedding_softmax_layer(decoder_input_sequence)
+      decoder_inputs = tf.cast(decoder_inputs, self.params["dtype"])
+      attention_bias = tf.cast(attention_bias, self.params["dtype"])
+
+      with tf.name_scope("add_pos_encoding"):
+        length = tf.shape(decoder_inputs)[1]
+        pos_encoding = self.position_embedding(decoder_inputs)
+        pos_encoding = tf.cast(pos_encoding, self.params["dtype"])
+        decoder_inputs += pos_encoding
+        decoder_inputs = tf.nn.dropout(
+          decoder_inputs, rate=self.params["layer_postprocess_dropout"])
+
+      # Run values
+      decoder_self_attention_bias = \
+          model_utils.get_decoder_self_attention_bias(
+          length, dtype=self.params["dtype"])
+      outputs = self.decoder_stack(
+          decoder_inputs,
+          encoder_outputs,
+          decoder_self_attention_bias,
+          attention_bias,
+          training=True)
       logits = self.embedding_softmax_layer(outputs, mode="linear")
       logits = tf.cast(logits, tf.float32)
       return logits

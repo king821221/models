@@ -81,6 +81,14 @@ def bleu_tokenize(string):
   string = uregex.symbol_re.sub(r" \1 ", string)
   return string.split()
 
+def bleu_wrapper_mem(ref_filename, hyp_mem, case_sensitive=False):
+  """Compute BLEU for two files (reference and hypothesis translation)."""
+  ref_lines = tokenizer.native_to_unicode(
+      tf.io.gfile.GFile(ref_filename).read()).strip().splitlines()
+  #hyp_lines = tokenizer.native_to_unicode(
+   #   tf.io.gfile.GFile(hyp_filename).read()).strip().splitlines()
+  hyp_lines = hyp_mem
+  return bleu_on_list(ref_lines, hyp_lines, case_sensitive)
 
 def bleu_wrapper(ref_filename, hyp_filename, case_sensitive=False):
   """Compute BLEU for two files (reference and hypothesis translation)."""
@@ -93,6 +101,7 @@ def bleu_wrapper(ref_filename, hyp_filename, case_sensitive=False):
 
 def bleu_on_list(ref_lines, hyp_lines, case_sensitive=False):
   """Compute BLEU for two list of strings (reference and hypothesis)."""
+  print("ref lines {} hyp_lines {}".format(len(ref_lines), len(hyp_lines)))
   if len(ref_lines) != len(hyp_lines):
     raise ValueError(
         "Reference and translation files have different number of "
